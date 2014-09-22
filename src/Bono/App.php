@@ -5,7 +5,7 @@
  *
  * MIT LICENSE
  *
- * Copyright (c) 2013 PT Sagara Xinix Solusitama
+ * Copyright (c) 2014 PT Sagara Xinix Solusitama
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -29,7 +29,7 @@
  * @category  PHP_Framework
  * @package   Bono
  * @author    Ganesha <reekoheek@gmail.com>
- * @copyright 2013 PT Sagara Xinix Solusitama
+ * @copyright 2014 PT Sagara Xinix Solusitama
  * @license   https://raw.github.com/xinix-technology/bono/master/LICENSE MIT
  * @version   0.10.0
  * @link      http://xinix.co.id/products/bono
@@ -38,10 +38,11 @@ namespace Bono;
 
 use Slim\Slim;
 use Bono\Provider\ProviderRepository;
+use Bono\Exception\FatalException;
+use Bono\Handler\ErrorHandler;
+use Bono\Handler\NotFoundHandler;
 
 use Whoops\Run;
-use Whoops\Handler\PrettyPageHandler;
-use Whoops\Handler\JsonResponseHandler;
 
 /**
  * App
@@ -50,7 +51,7 @@ use Whoops\Handler\JsonResponseHandler;
  * @category  PHP_Framework
  * @package   Bono
  * @author    Ganesha <reekoheek@gmail.com>
- * @copyright 2013 PT Sagara Xinix Solusitama
+ * @copyright 2014 PT Sagara Xinix Solusitama
  * @license   https://raw.github.com/xinix-technology/bono/master/LICENSE MIT
  * @version   0.10.0
  * @link      http://xinix.co.id/products/bono
@@ -86,6 +87,8 @@ class App extends Slim
         $settings['config.path'] = '../config';
         $settings['debug'] = true;
         $settings['autorun'] = true;
+        $settings['bono.cli'] = (PHP_SAPI === 'cli');
+        $settings['bono.timezone'] = 'UTC';
 
         if (!isset($settings['bono.debug'])) {
             $settings['bono.debug'] = ($settings['mode'] == 'development') ? true : false;
@@ -104,15 +107,42 @@ class App extends Slim
      */
     public function __construct(array $userSettings = array())
     {
+        register_shutdown_function(array($this, 'shutdownHandler'));
+        set_error_handler(array($this, 'handleErrors'));
 
         try {
+            date_default_timezone_set('UTC');
+
+            if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+                if ($_SERVER['HTTP_X_FORWARDED_PROTO'] === 'http') {
+                    unset($_SERVER['HTTPS']);
+                } else {
+                    $_SERVER['HTTPS'] = 'on';
+                }
+
+                if (isset($_SERVER['HTTP_X_FORWARDED_PORT'])) {
+                    $_SERVER['SERVER_PORT'] = $_SERVER['HTTP_X_FORWARDED_PORT'];
+                }
+            }
+
+            if (PHP_SAPI === 'cli') {
+                \Bono\CLI\Environment::getInstance();
+            }
+
             parent::__construct($userSettings);
+
             $this->container->singleton(
                 'request',
                 function ($c) {
                     return new \Bono\Http\Request($c['environment']);
                 }
             );
+
+            $app = $this;
+
+            $this->view = function ($c) use ($app) {
+                return $app->theme->getView();
+            };
 
             $this->container->singleton(
                 'response',
@@ -132,6 +162,10 @@ class App extends Slim
                         $config = array();
                     }
 
+                    if (is_callable($themeClass)) {
+                        $themeClass = $themeClass();
+                    }
+
                     return ($themeClass instanceof \Bono\Theme\Theme) ? $themeClass : new $themeClass($config);
                 }
             );
@@ -147,91 +181,57 @@ class App extends Slim
             $this->configureMiddleware();
 
             if ($this->config('autorun')) {
-
                 $this->run();
             }
         } catch (\Slim\Exception\Stop $e) {
-            exit;
-        } catch (\Exception $e) {
-            if ($this->config('bono.debug')) {
-                $app = $this;
-                $app->config('whoops.error_page_handler', new PrettyPageHandler);
-                $app->config('whoops.error_json_handler', new JsonResponseHandler);
-                $app->config('whoops.error_json_handler')->onlyForAjaxRequests(true);
-                $app->config(
-                    'whoops.slim_info_handler',
-                    function () use ($app) {
-                        try {
-                            $request = $app->request();
-                        } catch (RuntimeException $e) {
-                            return;
-                        }
-
-                        $current_route = $app->router()->getCurrentRoute();
-                        $route_details = array();
-                        if ($current_route !== null) {
-                            $route_details = array(
-                                'Route Name'       => $current_route->getName() ?: '<none>',
-                                'Route Pattern'    => $current_route->getPattern() ?: '<none>',
-                                'Route Middleware' => $current_route->getMiddleware() ?: '<none>',
-                            );
-                        }
-
-                        $app->config('whoops.error_page_handler')->addDataTable('Slim Application', array_merge(array(
-                            'Charset'          => $request->headers('ACCEPT_CHARSET'),
-                            'Locale'           => $request->getContentCharset() ?: '<none>',
-                            'Application Class'=> get_class($app)
-                        ), $route_details));
-
-                        $app->config('whoops.error_page_handler')->addDataTable('Slim Application (Request)', array(
-                            'URI'         => $request->getRootUri(),
-                            'Request URI' => $request->getResourceUri(),
-                            'Path'        => $request->getPath(),
-                            'Query String'=> $request->params() ?: '<none>',
-                            'HTTP Method' => $request->getMethod(),
-                            'Script Name' => $request->getScriptName(),
-                            'Base URL'    => $request->getUrl(),
-                            'Scheme'      => $request->getScheme(),
-                            'Port'        => $request->getPort(),
-                            'Host'        => $request->getHost(),
-                        ));
-                    }
-                );
-
-                // Open with editor if editor is set
-                $whoops_editor = $app->config('whoops.editor');
-                if ($whoops_editor !== null) {
-                    $app->config('whoops.error_page_handler')->setEditor($whoops_editor);
-                }
-
-                $app->config('whoops', new Run);
-                $app->config('whoops')->pushHandler($app->config('whoops.error_page_handler'));
-                $app->config('whoops')->pushHandler($app->config('whoops.error_json_handler'));
-                $app->config('whoops')->pushHandler($app->config('whoops.slim_info_handler'));
-
-                $app->error(function ($exception) use ($app) {
-                    // Log error if it's enabled
-                    if ($app->config('log.enabled')) {
-                        $app->log->error((string) $exception);
-                    }
-                    // Throw whoops exception
-                    $app->config('whoops')->handleException($exception);
-                });
-
-                try {
-                    $app->error($e);
-                } catch (\Slim\Exception\Stop $e) {
-                    // Do nothing
-                }
-            } else {
-                try {
-                    $this->error($e);
-                } catch (\Slim\Exception\Stop $e) {
-                    // Do nothing
-                }
-            }
+            // noop
         }
 
+    }
+
+    public function shutdownHandler()
+    {
+        $e = error_get_last();
+        if ($e) {
+            $this->configureHandler()->error(new FatalException($e));
+        }
+    }
+
+    /**
+     * Override callErrorHandler
+     * @param  [type] $argument [description]
+     * @return [type] [description]
+     */
+    protected function callErrorHandler($argument = null)
+    {
+        if (ob_get_level()) {
+            ob_end_clean();
+        }
+
+        return parent::callErrorHandler($argument);
+    }
+
+    /**
+     * Override error
+     * @param [type] $argument [description]
+     * @return
+     */
+    public function error($argument = null)
+    {
+        if (is_callable($argument)) {
+            return parent::error($argument);
+        } else {
+            if (isset($this->container['response'])) {
+                try {
+                    return parent::error($argument);
+                } catch (\Slim\Exception\Stop $e) {
+                    exit(1);
+                }
+            } else {
+                echo $this->callErrorHandler($argument);
+                exit(1);
+            }
+        }
     }
 
     /**
@@ -241,16 +241,13 @@ class App extends Slim
      */
     public function run()
     {
+        require_once dirname(__FILE__).'/../functions.php';
 
         if ($this->isRunning) {
             return;
         }
 
         $this->isRunning = true;
-
-        if ($this->config('bono.debug')) {
-            $this->add(new \Bono\Middleware\WhoopsMiddleware());
-        }
 
         $this->add(new \Bono\Middleware\CommonHandlerMiddleware());
 
@@ -319,6 +316,38 @@ class App extends Slim
             }
             $this->config($config);
         }
+
+        $timezone = $this->config('bono.timezone');
+        if (isset($timezone)) {
+            date_default_timezone_set($timezone);
+        }
+    }
+
+    public function config($name, $value = null)
+    {
+        if (func_num_args() === 1) {
+            if (is_array($name)) {
+                foreach ($name as $key => $value) {
+                    $this->config($key, $value);
+                }
+            } else {
+                return parent::config($name);
+            }
+        } else {
+            $settings = $this->settings;
+            if (is_array($value)) {
+                if (empty($settings[$name]) || !is_array($settings[$name])) {
+                    $settings[$name] = array();
+                }
+                if (! is_array($settings[$name])) {
+                    $settings[$name] = (array) $settings[$name];
+                }
+                $settings[$name] = array_merge($settings[$name], $value);
+            } else {
+                $settings[$name] = $value;
+            }
+            $this->settings = $settings;
+        }
     }
 
     /**
@@ -345,114 +374,18 @@ class App extends Slim
      */
     protected function configureHandler()
     {
-        $that = $this;
-        $onNotFound = function () use ($that) {
-            $that->view    = new \Slim\View();
-            $templatesPath = $that->config('app.templates.path');
-            $errorTemplate = $templatesPath . DIRECTORY_SEPARATOR . 'notFound.php';
+        if ($this->config('_handlerConfigured') !== true) {
+            $app = $this;
 
-            if (is_readable($errorTemplate)) {
-                $that->view->setTemplatesDirectory($templatesPath);
-                $that->view->display($errorTemplate, array(), 404);
-            } else {
-                $that->response->setStatus(404);
-                echo '<html>
-                <head>
-                    <title>Ugly Not Found!</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-                    <style>
-                        body { font-family: Arial; font-size: 14px; line-height: 1.5; color: #333 }
-                        h1 { border-bottom: 1px solid #88f; font-weight: normal; }
-                        label { margin-top: 10px; display: block; font-size: .8em; font-weight: bold; }
-                        pre { margin: 0}
-                        blockquote { font-size: .8em; font-style: italic; margin: 0; }
-                        .row, .stack-trace { border: 1px solid #f88; padding: 5px; border-radius: 5px; background-color: #fee; overflow: auto; }
-                    </style>
-                </head>
-                <body>
-                    <h1>Ugly Not Found!</h1>
-
-                    <p>Whoops! Apparently this is not the page you are looking for.</p>
-                    <blockquote>Edit this page by creating templates/notFound.php</blockquote>
-                </body>
-                </html>';
+            if ($this->config('bono.cli') !== true) {
+                $this->notFound(array(new NotFoundHandler($this), 'handle'));
+                $this->error(array(new ErrorHandler($this), 'handle'));
             }
 
-        };
-        $onError = function (\Exception $exception) use ($that, $onNotFound) {
+            $this->config('_handlerConfigured', true);
+        }
 
-            $errorCode = 500;
-            if ($exception instanceof \Bono\Exception\RestException) {
-                $errorCode = $exception->getCode();
-            }
-
-            if ($errorCode == 404) {
-                $onNotFound();
-
-                return;
-            }
-
-            $that->view    = new \Slim\View();
-            $templatesPath = $that->config('app.templates.path');
-            $errorTemplate = $templatesPath . DIRECTORY_SEPARATOR . 'error.php';
-            $errorData     = array(
-                'stackTrace' => $exception->getTraceAsString(),
-                'code'       => $exception->getCode(),
-                'message'    => $exception->getMessage(),
-                'file'       => $exception->getFile(),
-                'line'       => $exception->getLine(),
-            );
-
-            if (is_readable($errorTemplate)) {
-                $that->view->setTemplatesDirectory($templatesPath);
-                $that->view->display($errorTemplate, $errorData, $errorCode);
-            } else {
-                $that->response->setStatus($errorCode);
-
-                echo '<html>
-                <head>
-                    <title>Ugly Error!</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-                    <style>
-                        body { font-family: Arial; font-size: 14px; line-height: 1.5; color: #333 }
-                        h1 { border-bottom: 1px solid #f88; font-weight: normal; }
-                        label { margin-top: 10px; display: block; font-size: .8em; font-weight: bold; }
-                        pre { margin: 0}
-                        blockquote { font-size: .8em; font-style: italic; margin: 0; }
-                        .row, .stack-trace { border: 1px solid #f88; padding: 5px; border-radius: 5px; background-color: #fee; overflow: auto; }
-                    </style>
-                </head>
-                <body>
-                    <h1>Ugly Error!</h1>
-
-                    <p>Something wrong happened.</p>
-                    <blockquote>Edit this page by creating templates/error.php</blockquote>
-
-                    <label>Code</label>
-                    <div class="row">'.
-                        '<code>'. $errorData['code'] .'</code>'.
-                    '</div>
-
-                    <label>Message</label>
-                    <div class="row"><code>'.$errorData['message'].'</code></div>
-
-                    <label>File</label>
-                    <div class="row"><code>'. $errorData['file'] .'</code></div>
-                    <label>Line</label>
-                    <div class="row"><code>'. $errorData['line'] .'</code></div>
-
-                    <label>Stack Trace</label>
-                    <div class="stack-trace">
-                        <pre>'. $errorData['stackTrace'] .'</pre>
-                    </div>
-
-                </body>
-                </html>';
-            }
-        };
-
-        $this->error($onError);
-        $this->notFound($onNotFound);
+        return $this;
     }
 
     /**
@@ -465,6 +398,11 @@ class App extends Slim
         $this->providerRepository = new ProviderRepository($this);
 
         $providers = $this->config('bono.providers') ?: array();
+
+        if ($this->config('bono.cli')) {
+            $this->providerRepository->add(new \Bono\Provider\CLIProvider());
+        }
+
         foreach ($providers as $k => $v) {
 
             $Provider = $v;
@@ -614,5 +552,3 @@ class App extends Slim
         }
     }
 }
-
-require_once dirname(__FILE__).'/../functions.php';

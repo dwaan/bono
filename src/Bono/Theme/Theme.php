@@ -5,7 +5,7 @@
  *
  * MIT LICENSE
  *
- * Copyright (c) 2013 PT Sagara Xinix Solusitama
+ * Copyright (c) 2014 PT Sagara Xinix Solusitama
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,7 +30,7 @@
  * @package    Bono
  * @subpackage Theme
  * @author     Ganesha <reekoheek@gmail.com>
- * @copyright  2013 PT Sagara Xinix Solusitama
+ * @copyright  2014 PT Sagara Xinix Solusitama
  * @license    https://raw.github.com/xinix-technology/bono/master/LICENSE MIT
  * @version    0.10.0
  * @link       http://xinix.co.id/products/bono
@@ -46,7 +46,7 @@ use Bono\App;
  * @package    Bono
  * @subpackage View
  * @author     Ganesha <reekoheek@gmail.com>
- * @copyright  2013 PT Sagara Xinix Solusitama
+ * @copyright  2014 PT Sagara Xinix Solusitama
  * @license    https://raw.github.com/xinix-technology/bono/master/LICENSE MIT
  * @version    0.10.0
  * @link       http://xinix.co.id/products/bono
@@ -78,6 +78,8 @@ abstract class Theme
         array(),
     );
 
+    protected $view;
+
     /**
      * [base description]
      *
@@ -100,14 +102,15 @@ abstract class Theme
         $app = App::getInstance();
         $that = $this;
 
-        $app->filter(
-            'about',
-            function ($key) use ($app) {
-                $about = $app->config('app.about');
+        $appConfig = $app->config('application');
 
-                return @$about[$key];
+        $app->filter('page.title', function ($key) use ($appConfig) {
+            if (isset($appConfig['title'])) {
+                return $appConfig['title'];
             }
-        );
+
+            return $key;
+        });
 
         foreach ($config as $key => $value) {
             if (isset($this->$key)) {
@@ -129,6 +132,7 @@ abstract class Theme
             foreach ($that->resources['head.css'] as $res) {
                 $html[] = '<link rel="stylesheet" href="'.Theme::base($res).'">';
             }
+
             return implode("\n", $html)."\n";
         });
 
@@ -139,6 +143,7 @@ abstract class Theme
             foreach ($that->resources['foot.css'] as $res) {
                 $html[] = '<link rel="stylesheet" href="'.Theme::base($res).'">';
             }
+
             return implode("\n", $html)."\n";
         });
 
@@ -149,6 +154,7 @@ abstract class Theme
             foreach ($that->resources['head.js'] as $res) {
                 $html[] = '<script type"text/javascript" src="'.Theme::base($res).'"></script>';
             }
+
             return implode("\n", $html)."\n";
         });
 
@@ -159,6 +165,7 @@ abstract class Theme
             foreach ($that->resources['foot.js'] as $res) {
                 $html[] = '<script type"text/javascript" src="'.Theme::base($res).'"></script>';
             }
+
             return implode("\n", $html)."\n";
         });
 
@@ -233,7 +240,7 @@ abstract class Theme
     {
         $dir = rtrim($dir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'templates';
 
-        if (is_readable($dir.DIRECTORY_SEPARATOR.$template)) {
+        if (is_readable($dir.DIRECTORY_SEPARATOR.$template) && is_file($dir.DIRECTORY_SEPARATOR.$template)) {
             if (isset($view)) {
                 $view->setTemplatesDirectory($dir);
             }
@@ -258,7 +265,7 @@ abstract class Theme
         $app = App::getInstance();
         $Clazz = $app->config('bono.partial.view');
 
-        $view = new $Clazz;
+        $view = new $Clazz();
         $template = $this->resolve($template, $view);
         $view->replace($data);
 
@@ -347,5 +354,16 @@ abstract class Theme
         $dir->close();
 
         return true;
+    }
+
+    public function getView()
+    {
+        if (is_null($this->view)) {
+            $app = \App::getInstance();
+            $viewClass = $app->config('view');
+            $this->view = ($viewClass instanceof \Slim\View) ? $viewClass : new $viewClass();
+        }
+
+        return $this->view;
     }
 }
